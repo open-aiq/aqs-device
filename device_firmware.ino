@@ -4,6 +4,8 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <DHT.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 
 LiquidCrystal_I2C lcd(0x3F, 16, 2);
 
@@ -30,6 +32,11 @@ volatile uint32_t lastSettingsInterrupt = 0;
 volatile uint32_t lastBootInterrupt = 0;
 
 const uint32_t DEBOUNCE_MS = 150;
+
+
+const char* WIFI_SSID = "";
+const char* WIFI_PASSWORD = "";
+
 
 
 void IRAM_ATTR rightISR() {
@@ -112,6 +119,53 @@ void setup() {
   Serial.println(F("Booted"));
   pms.init();
   dht.begin();
+
+
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.print("Connecting");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi Connected");
+
+
+  Serial.println("\nConnected!");
+
+  Serial.print("Local IP: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.print("Gateway: ");
+  Serial.println(WiFi.gatewayIP());
+
+  Serial.print("Subnet: ");
+  Serial.println(WiFi.subnetMask());
+
+  Serial.print("RSSI: ");
+  Serial.println(WiFi.RSSI());
+
+  HTTPClient http;
+
+  http.begin("http://192.168.1.8:8080/api/v1/air-quality/current");
+
+  int httpCode = http.GET();
+
+  if (httpCode > 0) {
+    String payload = http.getString();
+
+    Serial.println("Response:");
+    Serial.println(payload);
+  } else {
+    Serial.printf("HTTP Error: %d\n", httpCode);
+    Serial.println(http.errorToString(httpCode));
+  }
+
+  http.end();
 }
 
 void loop() {
