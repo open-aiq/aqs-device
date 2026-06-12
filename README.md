@@ -1,228 +1,74 @@
-# PMSerial: HardwareSerial.ino
+# Device Firmware — Air Quality Monitor
 
-Read PMS5003 sensor on Serial/Serial1/Serial2, depending on the board.
+ESP32 firmware for an air-quality monitor that reads particulate matter, temperature,
+and humidity, drives a 16×2 I2C LCD, handles four push buttons via interrupts, and
+reports over WiFi.
 
-## [Arduino Leonardo](https://docs.platformio.org/en/latest/boards/atmelavr/leonardo.html)
+## Hardware
 
-**Note** This is a 5V board, and the PMS5003 RX/TX pins are 3.3V.
-You need to add a logic level converter, or use a 3.3V version of this board.
+- **MCU:** ESP32 (DOIT ESP32 DevKit v1)
+- **PM sensor:** Plantower PMS5003 (UART, on `Serial2`)
+- **Temp/Humidity:** DHT22
+- **Display:** 16×2 character LCD over I2C (PCF8574 backpack, address `0x3F`)
+- **Input:** 4 push buttons (Right / Left / Settings / Boot)
 
-- Serial1 on pins 0 (RX) and 1 (TX).
+## Pin map
 
-```ini
-[env:leonardo]
-framework = arduino
-platform = atmelavr
-board = leonardo
-build_flags = -D USE_HWSERIAL1
+| Function            | GPIO        | Notes                          |
+|---------------------|-------------|--------------------------------|
+| I2C SDA / SCL       | 21 / 22     | LCD                            |
+| PMS5003 RX / TX     | 16 / 17     | `Serial2`, 9600 baud           |
+| DHT22 data          | 14          |                                |
+| Button: Right       | 34          | input-only pin, FALLING edge   |
+| Button: Left        | 35          | input-only pin, FALLING edge   |
+| Button: Settings    | 36          | input-only pin, FALLING edge   |
+| Button: Boot        | 39          | input-only pin, FALLING edge   |
+
+> Note: GPIO 34/35/36/39 are input-only and have **no internal pull-ups** — make sure
+> each button has an external pull-up resistor.
+
+## Project layout
+
+```
+.
+├── platformio.ini          # build config, board, library deps
+├── src/main.cpp            # firmware source
+├── include/
+│   ├── secrets.h           # WiFi credentials (gitignored — create from template)
+│   └── secrets.example.h   # template to copy
+└── README.md
 ```
 
-```bash
-# compile
-platformio run -e leonardo
+## Setup
 
-# upload
-platformio run -e leonardo -t upload
+This is a [PlatformIO](https://platformio.org/) project.
 
-# open serial monitor
-platformio run -e leonardo -t monitor
-```
+1. Copy the secrets template and fill in your WiFi details:
 
-## [Arduino Mega 2560](https://docs.platformio.org/en/latest/boards/atmelavr/megaatmega2560.html)
+   ```bash
+   cp include/secrets.example.h include/secrets.h
+   # then edit include/secrets.h
+   ```
 
-**Note** This is a 5V board, and the PMS5003 RX/TX pins are 3.3V.
-You need to add a logic level converter, or use a 3.3V version of this board.
+2. Build:
 
-- Serial1 on pins 19 (RX) and 18 (TX),
-- Serial2 on pins 17 (RX) and 16 (TX),
-- Serial3 on pins 15 (RX) and 14 (TX).
+   ```bash
+   pio run
+   ```
 
-This example uses Serial1.
+3. Upload to the board:
 
-```ini
-[env:mega2560]
-framework = arduino
-platform = atmelavr
-board = megaatmega2560
-build_flags = -D USE_HWSERIAL1
-```
+   ```bash
+   pio run -t upload
+   ```
 
-```bash
-# compile
-platformio run -e mega2560
+4. Open the serial monitor (9600 baud):
 
-# upload
-platformio run -e mega2560 -t upload
+   ```bash
+   pio device monitor
+   ```
 
-# open serial monitor
-platformio run -e mega2560 -t monitor
-```
+## Configuration
 
-## [STM32F103C8](https://docs.platformio.org/en/latest/boards/ststm32/genericSTM32F103C8.html)
-
-**Note** This is a 3.3V board, and the PMS5003 requires 5V.
-You need provide 5V for the fan to operate properly.
-
-- Serial1 on pins PA10 (RX) and PA9 (TX),
-- Serial2 on pins PA3  (RX) and PA2 (TX),
-- Serial3 on pins PB11 (RX) and PB10 (TX).
-
-This example uses Serial1.
-
-```ini
-[env:genericSTM32F103C8]
-framework = arduino
-platform = ststm32
-board = genericSTM32F103C8
-upload_protocol = stlink
-build_flags = -D ENABLE_HWSERIAL1 -D USE_HWSERIAL1
-```
-
-```bash
-# compile
-platformio run -e genericSTM32F103C8
-
-# upload
-platformio run -e genericSTM32F103C8 -t upload
-
-# open serial monitor
-platformio run -e genericSTM32F103C8 -t monitor
-```
-
-## [STM32 Maple Mini](https://docs.platformio.org/en/latest/boards/ststm32/maple_mini_b20.html)
-
-**Note** This is a 3.3V board, and the PMS5003 requires 5V.
-You need provide 5V for the fan to operate properly.
-
-- Serial1 on pins 25/PA10 (RX) and 26/PA9 (TX),
-- Serial2 on pins 8/PA3  (RX) and 9/PA2 (TX),
-- Serial3 on pins 0/PB11 (RX) and 1/PB10 (TX).
-
-This example uses Serial2.
-
-```ini
-[env:maple_mini]
-framework = arduino
-platform = ststm32
-board = maple_mini_b20
-build_flags = -D USE_HWSERIAL2
-```
-
-```bash
-# compile
-platformio run -e maple_mini
-
-# upload
-platformio run -e maple_mini -t upload
-
-# open serial monitor
-platformio run -e maple_mini -t monitor
-```
-
-## [ESP8266 ESP-01 512k](https://docs.platformio.org/en/latest/boards/espressif8266/esp01.html)
-
-**Note** This is a 3.3V board, and the PMS5003 requires 5V.
-
-- Serial is the only HardwareSerial.
-
-This example used Serial for communicating with the sensor
-and printing the sensor values.
-Some garbage between printouts is to be expected.
-
-```ini
-[env:esp01]
-framework = arduino
-platform = espressif8266
-board = esp01
-```
-
-```bash
-# compile
-platformio run -e esp01
-
-# upload
-platformio run -e esp01 -t upload
-
-# open serial monitor
-platformio run -e esp01 -t monitor
-```
-
-## [ESP32 MiniKit](https://docs.platformio.org/en/latest/boards/espressif32/mhetesp32minikit.html)
-
-**Note** This is a 3.3V board, and the PMS5003 requires 5V.
-You need provide 5V for the fan to operate properly.
-
-- Serial1 is by default on pins 9 (RX) and 10 (TX).
-- Serial2 on pins 16 (RX) and 17 (TX).
-
-On some ESP32 boards Serial1 default pins are connected to the flash.
-Using the standard constructor will cause a crash, see [espressif/arduino-esp32#148](https://github.com/espressif/arduino-esp32/issues/148).
-
-```c++
-// will crash the ESP32
-SerialPM pms(PMSx003, Serial1);
-```
-
-Fortunately, it is possible to define alternative for pins by calling:
-
-```c++
-// define Serial1 pins
-Serial1.begin(9600, SERIAL_8N1, <RX>, <TX>);
-```
-
-The PMSerial library uses this feature to implement the flexibility of SoftwareSerial
-
-```c++
-// define Serial1 pins
-SerialPM pms(PMS5003, <RX>, <TX>);
-```
-
-The [SoftwareSerial example][esp32sw] uses Serial1 on pins 23 (RX) and 19 (TX).
-This example uses Serial2.
-
-[esp32sw]: ../SoftwareSerial/README.md#esp32-minikit
-
-```ini
-[env:esp32minikit]
-framework = arduino
-platform = espressif32
-board = mhetesp32minikit
-build_flags = -D USE_HWSERIAL2
-```
-
-```bash
-# compile
-platformio run -e esp32minikit
-
-# upload
-platformio run -e esp32minikit -t upload
-
-# open serial monitor
-platformio run -e esp32minikit -t monitor
-```
-
-## [Arduino MKR WiFi 1010](https://docs.platformio.org/en/latest/boards/atmelsam/mkrwifi1010.html)
-
-**Note** This is a 3.3V board, and the PMS5003 requires 5V.
-You need provide 5V for the fan to operate properly.
-
-- Serial1 on pins 13 (RX) and 14 (TX).
-
-```ini
-[env:mkrwifi1010]
-framework = arduino
-platform = atmelsam
-board = mkrwifi1010
-build_flags = -D USE_HWSERIAL1
-```
-
-```bash
-# compile
-platformio run -e mkrwifi1010
-
-# upload
-platformio run -e mkrwifi1010 -t upload
-
-# open serial monitor
-platformio run -e mkrwifi1010 -t monitor
-```
+- WiFi credentials live in `include/secrets.h` (`WIFI_SSID`, `WIFI_PASSWORD`).
+- Board, monitor speed, and library dependencies are set in `platformio.ini`.

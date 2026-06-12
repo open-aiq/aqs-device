@@ -1,11 +1,15 @@
-// HardwareSerial1.ino: Read PMS5003 sensor on Serial1
+// main.cpp: Read PMS5003 sensor on Serial2 (ESP32)
 
+#include <Arduino.h>
 #include <PMserial.h>  // Arduino library for PM sensors with serial interface
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <DHT.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+
+#include "secrets.h"
 
 LiquidCrystal_I2C lcd(0x3F, 16, 2);
 
@@ -33,9 +37,6 @@ volatile uint32_t lastBootInterrupt = 0;
 
 const uint32_t DEBOUNCE_MS = 150;
 
-
-const char* WIFI_SSID = "";
-const char* WIFI_PASSWORD = "";
 
 
 
@@ -149,6 +150,22 @@ void setup() {
   Serial.print("RSSI: ");
   Serial.println(WiFi.RSSI());
 
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+  Serial.print("Waiting for time");
+
+  struct tm timeinfo;
+
+  // wait until time is valid (important for SSL)
+  while (!getLocalTime(&timeinfo)) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println("\nTime synced");
+
+  Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
+
   HTTPClient http;
 
   http.begin("http://192.168.1.8:8080/api/v1/air-quality/current");
@@ -166,6 +183,34 @@ void setup() {
   }
 
   http.end();
+
+
+
+
+  WiFiClientSecure client;
+  client.setInsecure();  // safe for testing
+
+  HTTPClient https;
+
+  if (https.begin(client, "https://api.ipify.org?format=json")) {
+
+    int code = https.GET();
+
+    Serial.print("HTTP code: ");
+    Serial.println(code);
+
+    if (code > 0) {
+      String payload = https.getString();
+      Serial.println("Response:");
+      Serial.println(payload);
+    } else {
+      Serial.println("Request failed");
+    }
+
+    https.end();
+  } else {
+    Serial.println("HTTPS begin failed");
+  }
 }
 
 void loop() {
