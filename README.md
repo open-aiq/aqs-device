@@ -72,3 +72,14 @@ This is a [PlatformIO](https://platformio.org/) project.
 
 - WiFi credentials live in `include/secrets.h` (`WIFI_SSID`, `WIFI_PASSWORD`).
 - Board, monitor speed, and library dependencies are set in `platformio.ini`.
+
+## Known issues / TODO
+
+- [ ] **Fix the HTTPClient URL-parser bug.** The query string is currently only
+  reachable by adding a `/` before `?` in the request URL, as a workaround for an
+  upstream parser bug. Track down and fix the root cause (or upstream a patch).
+  See [docs/upstream-bug-httpclient-url-parser.md](docs/upstream-bug-httpclient-url-parser.md).
+- [ ] **Reduce firmware size.** Adding BLE (Bluedroid) on top of WiFi + TLS pushed
+  the binary past the default 1.3 MB app partition, so the build now uses the
+  `huge_app.csv` partition scheme (3 MB app, no OTA). Investigate slimming the
+  build (e.g. NimBLE instead of Bluedroid) to recover headroom and re-enable OTA.

@@ -14,6 +14,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
+#include <Preferences.h>  // ESP32 internal flash key/value storage (NVS)
+
 #include "secrets.h"
 
 LiquidCrystal_I2C lcd(0x3F, 16, 2);
@@ -83,6 +85,99 @@ void IRAM_ATTR bootISR() {
 
 
 // ---------------------------------------------------------------------------
+// Persistent configuration (WiFi credentials + location)
+//
+// The WiFi name/password and the device location (latitude/longitude) are kept
+// in the ESP32's internal flash using the Preferences library (NVS = a small
+// built-in key/value store). These values survive reboots and power loss.
+//
+// Flow: the phone sets the values over BLE, then sends "SAVE" to write them to
+// flash. On every boot we load them back and use them to connect to WiFi.
+// ---------------------------------------------------------------------------
+
+Preferences preferences;                 // handle to the flash key/value store
+
+// All the settings we store, kept together in one place.
+struct DeviceConfig {
+  String ssid;       // WiFi network name
+  String password;   // WiFi password
+  double lat;        // location latitude
+  double lon;        // location longitude
+};
+
+DeviceConfig config;                     // the live working copy, held in RAM
+
+// Read saved settings from flash into `config`. Anything not yet saved comes
+// back as the given default ("" or 0).
+void loadConfig() {
+  preferences.begin("config", true);     // open storage area "config", read-only
+  config.ssid     = preferences.getString("ssid", "");
+  config.password = preferences.getString("pass", "");
+  config.lat      = preferences.getDouble("lat", 0.0);
+  config.lon      = preferences.getDouble("lon", 0.0);
+  preferences.end();                      // close it (frees the handle)
+
+  Serial.println("Config loaded from flash:");
+  Serial.print("  SSID: "); Serial.println(config.ssid.length() ? config.ssid : "(none)");
+  Serial.print("  LAT:  "); Serial.println(config.lat, 6);
+  Serial.print("  LON:  "); Serial.println(config.lon, 6);
+}
+
+// Write the current `config` to flash so it survives a reboot/power loss.
+void saveConfig() {
+  preferences.begin("config", false);    // open storage area "config", read-write
+  preferences.putString("ssid", config.ssid);
+  preferences.putString("pass", config.password);
+  preferences.putDouble("lat", config.lat);
+  preferences.putDouble("lon", config.lon);
+  preferences.end();
+  Serial.println("Config saved to flash");
+}
+
+// Erase saved settings from flash and reset the working copy to blank.
+void clearConfig() {
+  preferences.begin("config", false);
+  preferences.clear();                    // wipe everything in this storage area
+  preferences.end();
+  config = DeviceConfig{"", "", 0.0, 0.0};
+  Serial.println("Config cleared");
+}
+
+// Connect to WiFi using the stored credentials. Gives up after `timeoutMs`
+// instead of looping forever, so a wrong password can't freeze the device —
+// it stays alive and reachable over BLE so you can fix the credentials.
+// Returns true only if the connection succeeded.
+bool connectWiFi(uint32_t timeoutMs = 15000) {
+  if (config.ssid.length() == 0) {
+    Serial.println("WiFi: no SSID configured, skipping connect");
+    return false;
+  }
+
+  Serial.print("WiFi: connecting to '");
+  Serial.print(config.ssid);
+  Serial.print("' ");
+
+  WiFi.begin(config.ssid.c_str(), config.password.c_str());
+
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("WiFi: connected, IP = ");
+    Serial.println(WiFi.localIP());
+    return true;
+  }
+
+  Serial.println("WiFi: connection timed out");
+  return false;
+}
+
+
+// ---------------------------------------------------------------------------
 // Bluetooth Low Energy (BLE)
 //
 // We turn the ESP32 into a tiny "wireless serial port" using the Nordic UART
@@ -129,12 +224,56 @@ void processBluetoothCommand(const String &cmd) {
 
   if (cmd.equalsIgnoreCase("PING")) {
     bleSend("PONG");                       // simple "are you alive?" check
+
   } else if (cmd.equalsIgnoreCase("STATUS")) {
     String status = "WiFi: ";
     status += (WiFi.status() == WL_CONNECTED) ? "connected" : "disconnected";
     status += " IP: ";
     status += WiFi.localIP().toString();
     bleSend(status);                       // report current WiFi state
+
+  // --- WiFi-credential provisioning -----------------------------------------
+  // The phone sends these one at a time to fill in the settings, then "SAVE".
+  // substring() keeps everything after the prefix, so passwords containing
+  // ':' are handled correctly.
+
+  } else if (cmd.startsWith("SSID:")) {
+    config.ssid = cmd.substring(5);        // text after "SSID:"
+    bleSend("OK: SSID set to " + config.ssid);
+
+  } else if (cmd.startsWith("PASS:")) {
+    config.password = cmd.substring(5);
+    bleSend("OK: password set");           // never echo the password back
+
+  } else if (cmd.startsWith("LAT:")) {
+    config.lat = cmd.substring(4).toDouble();   // "31.5204" -> 31.5204
+    bleSend("OK: LAT set to " + String(config.lat, 6));
+
+  } else if (cmd.startsWith("LON:")) {
+    config.lon = cmd.substring(4).toDouble();
+    bleSend("OK: LON set to " + String(config.lon, 6));
+
+  } else if (cmd.equalsIgnoreCase("SAVE")) {
+    saveConfig();                          // write all four values to flash
+    bleSend("SAVED. Reconnecting WiFi...");
+    if (connectWiFi()) {                   // try the new credentials right away
+      bleSend("WiFi connected: " + WiFi.localIP().toString());
+    } else {
+      bleSend("WiFi connect FAILED (check SSID/password)");
+    }
+
+  } else if (cmd.equalsIgnoreCase("LOAD")) {
+    // Report what's currently set (password hidden for safety).
+    String out = "SSID=" + config.ssid;
+    out += " PASS=" + String(config.password.length() ? "(set)" : "(empty)");
+    out += " LAT=" + String(config.lat, 6);
+    out += " LON=" + String(config.lon, 6);
+    bleSend(out);
+
+  } else if (cmd.equalsIgnoreCase("CLEAR")) {
+    clearConfig();                         // wipe stored settings
+    bleSend("CLEARED all stored config");
+
   } else {
     bleSend("echo: " + cmd);               // anything else: just echo it back
   }
@@ -264,96 +403,78 @@ void setup() {
   setupBluetooth();
 
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  Serial.print("Connecting");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // Load saved WiFi + location from flash. On a brand-new device nothing is
+  // stored yet, so fall back to the defaults in secrets.h until the user
+  // provisions real credentials over BLE and sends SAVE.
+  loadConfig();
+  if (config.ssid.length() == 0) {
+    Serial.println("No saved WiFi — using secrets.h defaults");
+    config.ssid     = WIFI_SSID;
+    config.password = WIFI_PASSWORD;
   }
 
-  Serial.println();
-  Serial.println("WiFi Connected");
+  // Everything below needs the internet, so only run it if WiFi actually came
+  // up. If it didn't, the device keeps running and stays reachable over BLE so
+  // you can send new credentials.
+  if (connectWiFi()) {
+    Serial.print("Gateway: ");
+    Serial.println(WiFi.gatewayIP());
 
+    Serial.print("Subnet: ");
+    Serial.println(WiFi.subnetMask());
 
-  Serial.println("\nConnected!");
+    Serial.print("RSSI: ");
+    Serial.println(WiFi.RSSI());
 
-  Serial.print("Local IP: ");
-  Serial.println(WiFi.localIP());
-
-  Serial.print("Gateway: ");
-  Serial.println(WiFi.gatewayIP());
-
-  Serial.print("Subnet: ");
-  Serial.println(WiFi.subnetMask());
-
-  Serial.print("RSSI: ");
-  Serial.println(WiFi.RSSI());
-
+    // Sync the clock (needed for TLS), but don't block forever if it fails.
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    Serial.print("Waiting for time");
+    struct tm timeinfo;
+    uint32_t timeStart = millis();
+    while (!getLocalTime(&timeinfo) && millis() - timeStart < 10000) {
+      Serial.print(".");
+      delay(500);
+    }
+    Serial.println("\nTime synced");
+    Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
 
-  Serial.print("Waiting for time");
-
-  struct tm timeinfo;
-
-  // wait until time is valid (important for SSL)
-  while (!getLocalTime(&timeinfo)) {
-    Serial.print(".");
-    delay(500);
-  }
-
-  Serial.println("\nTime synced");
-
-  Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
-
-  HTTPClient http;
-
-  http.begin("http://192.168.1.8:8080/api/v1/air-quality/current");
-
-  int httpCode = http.GET();
-
-  if (httpCode > 0) {
-    String payload = http.getString();
-
-    Serial.println("Response:");
-    Serial.println(payload);
-  } else {
-    Serial.printf("HTTP Error: %d\n", httpCode);
-    Serial.println(http.errorToString(httpCode));
-  }
-
-  http.end();
-
-
-
-
-  WiFiClientSecure client;
-  client.setInsecure();  // safe for testing
-
-  HTTPClient https;
-
-  // NOTE: the '/' before '?' is required — HTTPClient's URL parser splits
-  // host/path at the first '/', so without it the query string becomes part
-  // of the hostname and DNS resolution fails.
-  if (https.begin(client, "https://api.ipify.org/?format=json")) {
-
-    int code = https.GET();
-
-    Serial.print("HTTP code: ");
-    Serial.println(code);
-
-    if (code > 0) {
-      String payload = https.getString();
+    HTTPClient http;
+    http.begin("http://192.168.1.8:8080/api/v1/air-quality/current");
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
       Serial.println("Response:");
       Serial.println(payload);
     } else {
-      Serial.println("Request failed");
+      Serial.printf("HTTP Error: %d\n", httpCode);
+      Serial.println(http.errorToString(httpCode));
     }
+    http.end();
 
-    https.end();
+    WiFiClientSecure client;
+    client.setInsecure();  // safe for testing
+
+    HTTPClient https;
+    // NOTE: the '/' before '?' is required — HTTPClient's URL parser splits
+    // host/path at the first '/', so without it the query string becomes part
+    // of the hostname and DNS resolution fails.
+    if (https.begin(client, "https://api.ipify.org/?format=json")) {
+      int code = https.GET();
+      Serial.print("HTTP code: ");
+      Serial.println(code);
+      if (code > 0) {
+        String payload = https.getString();
+        Serial.println("Response:");
+        Serial.println(payload);
+      } else {
+        Serial.println("Request failed");
+      }
+      https.end();
+    } else {
+      Serial.println("HTTPS begin failed");
+    }
   } else {
-    Serial.println("HTTPS begin failed");
+    Serial.println("WiFi not connected — connect over BLE and send SSID:/PASS:/SAVE");
   }
 }
 
